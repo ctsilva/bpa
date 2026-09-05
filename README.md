@@ -68,7 +68,7 @@ implementation does not do; choose the radius for the sparsest region you care a
 
 ## How it compares
 
-All nine implementations were run on the same inputs by the comparison harness of
+The implementations below were run on the same inputs by the comparison harness of
 [BPA.jl](https://github.com/ctsilva/BPA.jl) (`compare/`), which checks every output on its
 own terms: each triangle must admit an empty ball of the radius on its outward side, and the
 mesh must be orientable and edge-manifold. Synthetic surfaces, the Stanford bunny scans
