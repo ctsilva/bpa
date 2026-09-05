@@ -9,73 +9,43 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
-env:
-  CONFIG: RelWithDebInfo
-  VCPKG_PACKAGES: "glm catch2"
-
 jobs:
   clang-format:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
-    - uses: actions/checkout@v2
-    - uses: DoozyX/clang-format-lint-action@v0.13
-      with:
-        exclude: './thirdparty'
-        extensions: 'cpp,hpp,h,cu'
-        clangFormatVersion: 13
+      - uses: actions/checkout@v4
+      - uses: DoozyX/clang-format-lint-action@v0.18
+        with:
+          extensions: 'cpp,h'
+          clangFormatVersion: 18
 
-  ci:
-    runs-on: ${{ matrix.os || 'ubuntu-22.04' }}
-    env: ${{ matrix.env }}
-    defaults:
-      run:
-        shell: bash
+  build:
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - env:
-              CXX: g++-12
-            install_extra: g++-12
-          - env:
-              CXX: clang++-14
-            install_extra: clang-14
-          - env:
-              VCPKG_DEFAULT_TRIPLET: x64-windows
-            os: windows-2022
-
+          - os: ubuntu-24.04
+            cxx: g++
+          - os: ubuntu-24.04
+            cxx: clang++
+          - os: macos-14
+            cxx: clang++
+    env:
+      CXX: ${{ matrix.cxx }}
     steps:
-      - uses: actions/checkout@v2
-      - name: install extras
-        if: ${{ matrix.install_extra }}
-        run: |
-          sudo apt install ${{ matrix.install_extra }}
-      - name: vcpkg install dependencies
-        run: |
-          vcpkg install $VCPKG_PACKAGES
-      - name: cmake
-        run: |
-          mkdir build
-          cd build
-          cmake .. -DCMAKE_BUILD_TYPE=$CONFIG -DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake
-      - name: build tests + driver
-        run: |
-          cmake --build build --config $CONFIG
-      - name: run tests
-        run: |
-          cd build
-          if [ -d $CONFIG ]
-          then
-            ./$CONFIG/tests
-          else
-            ./tests
-          fi
-      - name: run driver
-        run: |
-          cd build
-          if [ -d $CONFIG ]
-          then
-            ./$CONFIG/bpa ../test/data/bunny.xyz 0.002
-          else
-            ./bpa ../test/data/bunny.xyz 0.002
-          fi
+      - uses: actions/checkout@v4
+      - name: dependencies (apt)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y libglm-dev catch2
+      - name: dependencies (brew)
+        if: runner.os == 'macOS'
+        run: brew install glm catch2
+      - name: configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/opt/homebrew
+      - name: build
+        run: cmake --build build
+      - name: tests
+        run: cd build && ./tests
+      - name: driver
+        run: ./build/bpa test/data/bunny.xyz 0.002 build/bunny.off
