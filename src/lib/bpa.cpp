@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <deque>
+#include <cmath>
 #include <limits>
 #include <numbers>
 #include <numeric>
@@ -178,65 +179,177 @@ namespace bpa {
 			return {};
 		}
 
+		// ---- the front predicates (section 4.4): an edge is live while it is active or boundary;
+		// an inner edge has its two triangles and only records that the undirected edge is closed.
+
+		auto isLive(const MeshEdge* e) -> bool { return e->status != EdgeStatus::inner; }
+
+		auto notUsed(const MeshPoint* p) -> bool { return !p->used; }
+
+		auto onFront(const MeshPoint* p) -> bool { return std::any_of(begin(p->edges), end(p->edges), isLive); }
+
+		// The front holds the directed edge i -> j.
+		auto hasEdge(const MeshPoint* i, const MeshPoint* j) -> bool {
+			return std::any_of(begin(i->edges), end(i->edges), [&](const MeshEdge* e) { return isLive(e) && e->a == i && e->b == j; });
+		}
+
+		// The undirected edge {i, j} already has two triangles.
+		auto isClosed(const MeshPoint* i, const MeshPoint* j) -> bool {
+			return std::any_of(begin(i->edges), end(i->edges), [&](const MeshEdge* e) {
+				return e->status == EdgeStatus::inner && ((e->a == i && e->b == j) || (e->a == j && e->b == i));
+			});
+		}
+
+		// The tests the paper applies to the point k the ball lands on when pivoting e = (a, b)
+		// (fig. 5, line 3, and the "edge orientation checks" it mentions): the triangle (a, k, b)
+		// must not face against the normal of k, k must be unused or on the front, and the mesh
+		// must stay a manifold: neither new half-edge a -> k, k -> b may already be on the front
+		// with the same orientation, nor either undirected edge closed.
+		auto canAddTriangle(const MeshEdge* e, const MeshPoint* k) -> bool {
+			const auto normal = cross(k->pos - e->a->pos, e->b->pos - e->a->pos);
+			if (dot(normal, k->normal) < 0)
+				return false;
+			if (!(notUsed(k) || onFront(k)))
+				return false;
+			return !hasEdge(e->a, k) && !hasEdge(k, e->b) && !isClosed(e->a, k) && !isClosed(k, e->b);
+		}
+
+		// ---- ball pivoting (section 4.3, fig. 2)
+
+		// Angle below which a candidate counts as touching the ball in its initial position.
+		constexpr auto touchTolerance = 1e-6;
+		// Angle within which two hits count as simultaneous (cospherical points, as on a lattice).
+		constexpr auto tieTolerance = 1e-7;
+
+		// The ball centre pivoting around edge (a, b) moves on the circle m + r (cos t u + sin t v)
+		// in the plane perpendicular to the edge through its midpoint m: u points from m to the
+		// current centre, and v = (b - a) x u is the direction in which the ball leaves the
+		// current triangle.
+		struct PivotFrame {
+			dvec3 m, a, u, v;
+			double r;
+		};
+
+		auto pivotFrame(const MeshEdge* e) -> std::optional<PivotFrame> {
+			const auto m = (e->a->pos + e->b->pos) / 2.0;
+			auto a = e->b->pos - e->a->pos;
+			const auto la = length(a);
+			if (la == 0)
+				return {};
+			a /= la;
+			auto w = e->center - m;
+			w -= dot(w, a) * a; // numerical drift along the edge
+			const auto r = length(w);
+			if (r <= 1e-12 * la)
+				return {};
+			const auto u = w / r;
+			return PivotFrame{m, a, u, cross(a, u), r};
+		}
+
+		auto centerAt(const PivotFrame& fr, double t) -> dvec3 { return fr.m + fr.r * (std::cos(t) * fr.u + std::sin(t) * fr.v); }
+
+		// Smallest rotation angle in [0, 2 pi) at which the pivoting ball touches x, or nothing
+		// if it never does. With d = x - m and (d_u, d_v) = R (cos phi, sin phi) its components
+		// in the pivot plane, |centre(t) - x|^2 = radius^2 reduces to cos(t - phi) = K / R with
+		// K = (r^2 + |d|^2 - radius^2) / (2 r), so the two contacts are phi +- acos(K / R). A
+		// contact at (nearly) zero means x touches the initial ball: if the ball is moving into
+		// x the hit is immediate, otherwise that contact is ignored and the other one, where the
+		// ball comes back to x from the far side, is used. The opposite vertex of the edge is
+		// such a point.
+		auto pivotAngle(const PivotFrame& fr, dvec3 x, double radius) -> std::optional<double> {
+			const auto d = x - fr.m;
+			const auto du = dot(d, fr.u);
+			const auto dv = dot(d, fr.v);
+			const auto R = std::hypot(du, dv);
+			if (R <= 1e-12 * radius)
+				return {};
+			const auto ratio = (fr.r * fr.r + dot(d, d) - radius * radius) / (2 * fr.r) / R;
+			if (std::abs(ratio) > 1 + 1e-9)
+				return {};
+			const auto phi = std::atan2(dv, du);
+			const auto alpha = std::acos(std::clamp(ratio, -1.0, 1.0));
+			constexpr auto twoPi = 2 * std::numbers::pi;
+			const auto mod2pi = [](double t) { t = std::fmod(t, twoPi); return t < 0 ? t + twoPi : t; };
+			const auto ta = mod2pi(phi + alpha);
+			const auto tb = mod2pi(phi - alpha);
+			const auto touching = [](double t) { return t < touchTolerance || t > twoPi - touchTolerance; };
+			const auto touchA = touching(ta);
+			const auto touchB = touching(tb);
+			if (touchA || touchB) {
+				if (dv > 0) // the centre moves along v: into x
+					return 0.0;
+				if (touchA && touchB)
+					return {};
+				return touchA ? tb : ta;
+			}
+			return std::min(ta, tb);
+		}
+
 		struct PivotResult {
 			MeshPoint* p;
 			dvec3 center;
 		};
 
-		// Roll the ball around edge `e`, starting from its stored centre, and return the point it
-		// touches first together with the centre at that moment; nothing if it touches no point
-		// or the ball there is not empty.
-		auto ballPivot(const MeshEdge* e, Grid& grid, double radius) -> std::optional<PivotResult> {
-			const auto m = (e->a->pos + e->b->pos) / 2.0;
-			const auto oldCenterVec = normalize(e->center - m);
-			auto neighborhood = grid.sphericalNeighborhood(m, {e->a, e->b, e->opposite});
-
-			auto smallestAngle = std::numeric_limits<double>::max();
-			MeshPoint* pointWithSmallestAngle = nullptr;
-			dvec3 centerOfSmallest{};
-			for (const auto& p : neighborhood) {
-				const auto newFaceNormal = MeshFace{{e->b, e->a, p}}.normal();
-
-				// not in the paper: the new triangle must agree with the normal of the point
-				if (dot(newFaceNormal, p->normal) < 0)
-					continue;
-
-				const auto c = computeBallCenter(MeshFace{{e->b, e->a, p}}, radius);
-				if (!c)
-					continue;
-
-				// not in the paper: the ball centre must be above the new triangle
-				const auto newCenterVec = normalize(c.value() - m);
-				if (dot(newCenterVec, newFaceNormal) < 0)
-					continue;
-
-				// not in the paper: points joined to an edge end by an inner edge are skipped
-				const auto innerEdgeExists = std::any_of(begin(p->edges), end(p->edges), [&](const MeshEdge* ee) {
-					const auto* otherPoint = ee->a == p ? ee->b : ee->a;
-					return ee->status == EdgeStatus::inner && (otherPoint == e->a || otherPoint == e->b);
-				});
-				if (innerEdgeExists)
-					continue;
-
-				auto angle = std::acos(std::clamp(dot(oldCenterVec, newCenterVec), -1.0, 1.0));
-				if (dot(cross(newCenterVec, oldCenterVec), e->a->pos - e->b->pos) < 0)
-					angle += std::numbers::pi;
-				if (angle < smallestAngle) {
-					smallestAngle = angle;
-					pointWithSmallestAngle = p;
-					centerOfSmallest = c.value();
-				}
-			}
-
-			if (pointWithSmallestAngle && ballIsEmpty(centerOfSmallest, neighborhood, radius))
-				return PivotResult{pointWithSmallestAngle, centerOfSmallest};
-			return {};
+		// Preference among points hit simultaneously: 0 if the triangle would be rejected, else
+		// 1 plus the number of its new edges that glue to an existing front edge. The first pivot
+		// into a cospherical polygon fixes a diagonal; later pivots can only respect it.
+		auto tieScore(const MeshEdge* e, const MeshPoint* k) -> int {
+			if (!canAddTriangle(e, k))
+				return 0;
+			return 1 + hasEdge(k, e->a) + hasEdge(e->b, k);
 		}
 
-		auto notUsed(const MeshPoint* p) -> bool { return !p->used; }
+		// Roll the ball around edge e from its stored centre and return the point it touches
+		// first with the centre at that moment. Every point within reach of the ball is a
+		// candidate, the opposite vertex of e included: if the ball comes back to it before
+		// touching anything else there is no triangle to build. Because the initial ball is
+		// empty, the ball at the first contact is empty too.
+		auto ballPivot(const MeshEdge* e, Grid& grid, double radius) -> std::optional<PivotResult> {
+			const auto fr = pivotFrame(e);
+			if (!fr)
+				return {};
+			const auto neighborhood = grid.sphericalNeighborhood(fr->m, {e->a, e->b});
 
-		auto onFront(const MeshPoint* p) -> bool {
-			return std::any_of(begin(p->edges), end(p->edges), [&](const MeshEdge* e) { return e->status == EdgeStatus::active; });
+			struct Hit {
+				MeshPoint* p;
+				double angle;
+			};
+			std::vector<Hit> hits;
+			hits.reserve(neighborhood.size());
+			auto best = std::numeric_limits<double>::infinity();
+			for (auto* p : neighborhood)
+				if (const auto t = pivotAngle(*fr, p->pos, radius)) {
+					hits.push_back({p, *t});
+					best = std::min(best, *t);
+				}
+			if (hits.empty())
+				return {};
+
+			const auto tied = [&](const Hit& h) { return h.angle <= best + tieTolerance; };
+			const auto nTies = std::count_if(begin(hits), end(hits), tied);
+			if (nTies == 1) {
+				const auto& h = *std::find_if(begin(hits), end(hits), tied);
+				if (h.p == e->opposite)
+					return {}; // the ball came back to the opposite vertex first
+				return PivotResult{h.p, centerAt(*fr, h.angle)};
+			}
+
+			// Simultaneous hits: pick deterministically. The opposite vertex is never chosen; a
+			// point hit at the same angle gives a valid triangle with it on the ball's surface.
+			const Hit* choice = nullptr;
+			auto bestScore = -1;
+			for (const auto& h : hits) {
+				if (!tied(h) || h.p == e->opposite)
+					continue;
+				const auto score = tieScore(e, h.p);
+				if (score > bestScore || (score == bestScore && h.p->index < choice->p->index)) {
+					bestScore = score;
+					choice = &h;
+				}
+			}
+			if (!choice)
+				return {};
+			return PivotResult{choice->p, centerAt(*fr, choice->angle)};
 		}
 
 		// Mark the edge inner; getActiveEdge() drops it from the front later.
@@ -301,9 +414,10 @@ namespace bpa {
 			remove(b);
 		}
 
+		// The live front edge opposite to `edge`, if there is one.
 		auto findReverseEdgeOnFront(MeshEdge* edge) -> MeshEdge* {
 			for (auto& e : edge->a->edges)
-				if (e->a == edge->b)
+				if (isLive(e) && e->a == edge->b && e->b == edge->a)
 					return e;
 			return nullptr;
 		}
@@ -337,7 +451,7 @@ namespace bpa {
 
 			while (auto e_ij = getActiveEdge(front)) {
 				const auto o_k = ballPivot(e_ij.value(), grid, radius);
-				if (o_k && (notUsed(o_k->p) || onFront(o_k->p))) {
+				if (o_k && canAddTriangle(e_ij.value(), o_k->p)) {
 					outputTriangle({{e_ij.value()->a, o_k->p, e_ij.value()->b}}, triangles);
 					auto [e_ik, e_kj] = join(e_ij.value(), o_k->p, o_k->center, front, edges);
 					if (auto* e_ki = findReverseEdgeOnFront(e_ik))
