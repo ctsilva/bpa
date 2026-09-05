@@ -1,18 +1,19 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <glm/glm.hpp>
+#include <glm/gtx/norm.hpp>
 #include <vector>
 
 namespace bpa {
-	struct Triangle : std::array<glm::vec3, 3> {
-		auto normal() const { return glm::normalize(glm::cross((*this)[0] - (*this)[1], (*this)[0] - (*this)[2])); }
-	};
-
 	struct Point {
 		glm::vec3 pos;
 		glm::vec3 normal;
 	};
 
-	auto reconstruct(const std::vector<Point>& points, float radius) -> std::vector<Triangle>;
+	// Three indices into the input point vector, counter-clockwise seen from outside.
+	using Face = std::array<std::uint32_t, 3>;
+
+	auto reconstruct(const std::vector<Point>& points, float radius) -> std::vector<Face>;
 } // namespace bpa

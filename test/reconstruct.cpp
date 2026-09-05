@@ -29,7 +29,7 @@ namespace {
 		return points;
 	}
 
-	auto measuredReconstruct(const std::vector<Point>& points, float radius) -> std::vector<Triangle> {
+	auto measuredReconstruct(const std::vector<Point>& points, float radius) -> std::vector<Face> {
 		const auto start = std::chrono::high_resolution_clock::now();
 		auto result = reconstruct(points, radius);
 		const auto end = std::chrono::high_resolution_clock::now();
@@ -41,35 +41,35 @@ namespace {
 
 TEST_CASE("sphere_36_18", "[reconstruct]") {
 	const auto cloud = createSphericalCloud(36, 18);
-	savePoints("sphere_36_18_cloud.ply", cloud);
+	savePointsPLY("sphere_36_18_cloud.ply", cloud);
 	const auto mesh = measuredReconstruct(cloud, 0.3f);
 	CHECK(!mesh.empty());
-	saveTriangles("sphere_36_18_mesh.stl", mesh);
+	saveSTL("sphere_36_18_mesh.stl", cloud, mesh);
 }
 
 TEST_CASE("sphere_100_50", "[reconstruct]") {
 	const auto cloud = createSphericalCloud(100, 50);
-	savePoints("sphere_100_50_cloud.ply", cloud);
+	savePointsPLY("sphere_100_50_cloud.ply", cloud);
 	const auto mesh = measuredReconstruct(cloud, 0.1f);
 	CHECK(!mesh.empty());
-	saveTriangles("sphere_100_50_mesh.stl", mesh);
+	saveSTL("sphere_100_50_mesh.stl", cloud, mesh);
 }
 
 TEST_CASE("sphere_200_100", "[reconstruct]") {
 	const auto cloud = createSphericalCloud(200, 100);
-	savePoints("sphere_200_100_cloud.ply", cloud);
+	savePointsPLY("sphere_200_100_cloud.ply", cloud);
 	const auto mesh = measuredReconstruct(cloud, 0.04f);
 	CHECK(!mesh.empty());
-	saveTriangles("sphere_200_100_mesh.stl", mesh);
+	saveSTL("sphere_200_100_mesh.stl", cloud, mesh);
 }
 
 TEST_CASE("tetrahedron", "[reconstruct]") {
 	const auto cloud = std::vector<Point>{{{0, 0, 0}, glm::normalize(glm::vec3{-1, -1, -1})}, {{0, 1, 0}, glm::normalize(glm::vec3{0, 1, 0})},
 		{{1, 0, 0}, glm::normalize(glm::vec3{1, 0, 0})}, {{0, 0, 1}, glm::normalize(glm::vec3{0, 0, 1})}};
-	savePoints("tetrahedron_cloud.ply", cloud);
+	savePointsPLY("tetrahedron_cloud.ply", cloud);
 	const auto mesh = measuredReconstruct(cloud, 2);
 	CHECK(!mesh.empty());
-	saveTriangles("tetrahedron_mesh.stl", mesh);
+	saveSTL("tetrahedron_mesh.stl", cloud, mesh);
 }
 
 TEST_CASE("cube", "[reconstruct]") {
@@ -83,15 +83,15 @@ TEST_CASE("cube", "[reconstruct]") {
 		{{+1, +1, +1}, glm::normalize(glm::vec3{+1, +1, +1})},
 		{{+1, -1, +1}, glm::normalize(glm::vec3{+1, -1, +1})},
 	};
-	savePoints("cube_cloud.ply", cloud);
+	savePointsPLY("cube_cloud.ply", cloud);
 	const auto mesh = measuredReconstruct(cloud, 2);
 	CHECK(!mesh.empty());
-	saveTriangles("cube_mesh.stl", mesh);
+	saveSTL("cube_mesh.stl", cloud, mesh);
 }
 
 TEST_CASE("bunny", "[reconstruct]") {
 	const auto cloud = loadXYZ("../test/data/bunny.xyz");
 	const auto mesh = measuredReconstruct(cloud, 0.002f);
 	CHECK(!mesh.empty());
-	saveTriangles("bunny_mesh.stl", mesh);
+	saveSTL("bunny_mesh.stl", cloud, mesh);
 }
