@@ -182,5 +182,5 @@ TEST_CASE("bunny", "[reconstruct]") {
 	const auto s = stats(mesh, cloud.size());
 	CHECK(mesh.size() > 60000);
 	CHECK(s.badEdges == 0);
-	saveSTL("bunny_mesh.stl", cloud, mesh);
+	saveSTL(TEST_OUTPUT_DIR "/bunny_mesh.stl", cloud, mesh); // to look at, next to the test binary
 }
