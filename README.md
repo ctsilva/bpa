@@ -1,4 +1,4 @@
-# Ball-Pivoting Algorithm in one C++ file
+# Ball Pivoting Algorithm (BPA)
 
 ![Reconstruction of the bunny model](bunny.png)
 
@@ -13,10 +13,10 @@ of side 2ρ, a seed search that visits every cell once, the pivot that returns t
 the rolling ball touches, and the advancing front with the `join` and `glue` operators of
 section 4.4. It depends only on [glm](https://github.com/g-truc/glm) for vectors.
 
-This is a fork of [bernhardmgruber/bpa](https://github.com/bernhardmgruber/bpa), whose
-clarity it keeps. The changes are listed at the end; in short, the fork seeds more than once,
-pivots as the paper describes, works in double precision with relative tolerances, and
-returns indices. It was checked against [BPA.jl](https://github.com/ctsilva/BPA.jl),
+The 2020 version of this code was a compact demonstration of the algorithm; the changes
+listed at the end make it a reconstruction tool: it seeds more than once, pivots as the
+paper describes, works in double precision with relative tolerances, takes several radii,
+and returns indices. It was checked against [BPA.jl](https://github.com/ctsilva/BPA.jl),
 Open3D, MeshLab and the IPOL reference implementation on the same inputs; the numbers are
 below.
 
@@ -92,7 +92,7 @@ either has a non-empty ball; the ten-scan bunny has 17 components with both and 
 549). MeshLab's pivot has no empty-ball test, which is why it produces more triangles. The
 per-case reports, with renderings, are in the BPA.jl repository under `compare/results/`.
 
-## What changed from bernhardmgruber/bpa
+## What changed since the 2022 version
 
 Each change is one commit, with its measurements in the message.
 
@@ -133,4 +133,4 @@ The bunny model is provided by the
 
 ## License
 
-Boost Software License 1.0, as the original. See `LICENSE.txt`.
+Boost Software License 1.0. See `LICENSE.txt`.
