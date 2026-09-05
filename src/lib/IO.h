@@ -53,7 +53,7 @@ namespace bpa {
 		if (path.has_parent_path())
 			create_directories(path.parent_path());
 		std::ofstream f{path};
-		f.precision(9);
+		f.precision(17);
 		f << "OFF\n" << points.size() << ' ' << faces.size() << " 0\n";
 		for (const auto& p : points)
 			f << p.pos.x << ' ' << p.pos.y << ' ' << p.pos.z << '\n';
@@ -71,7 +71,7 @@ namespace bpa {
 		f.write(reinterpret_cast<const char*>(&count), sizeof(count));
 		const std::uint16_t attributeCount = 0;
 		for (const auto& t : faces) {
-			const glm::vec3 v[3] = {points[t[0]].pos, points[t[1]].pos, points[t[2]].pos};
+			const glm::vec3 v[3] = {glm::vec3(points[t[0]].pos), glm::vec3(points[t[1]].pos), glm::vec3(points[t[2]].pos)};
 			const auto normal = glm::normalize(glm::cross(v[1] - v[0], v[2] - v[0]));
 			f.write(reinterpret_cast<const char*>(&normal), sizeof(normal));
 			f.write(reinterpret_cast<const char*>(v), sizeof(v));
@@ -91,7 +91,7 @@ namespace bpa {
 			create_directories(path.parent_path());
 		std::ofstream f{path, std::ios::binary};
 		f << "ply\nformat binary_little_endian 1.0\nelement vertex " << points.size()
-		  << "\nproperty float x\nproperty float y\nproperty float z\nproperty float nx\nproperty float ny\nproperty float nz\nend_header\n";
+		  << "\nproperty double x\nproperty double y\nproperty double z\nproperty double nx\nproperty double ny\nproperty double nz\nend_header\n";
 		f.write(reinterpret_cast<const char*>(points.data()), points.size() * sizeof(points[0]));
 	}
 } // namespace bpa

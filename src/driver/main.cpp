@@ -11,7 +11,7 @@ int main(int argc, char* argv[]) try {
 	}
 
 	const std::filesystem::path inputFile = argv[1];
-	const float radius = std::stof(argv[2]);
+	const double radius = std::stod(argv[2]);
 	const std::filesystem::path outputFile = argc == 4 ? argv[3] : inputFile.string() + ".off";
 
 	const auto points = bpa::loadPoints(inputFile);

@@ -17,8 +17,8 @@ namespace bpa {
 		struct MeshEdge;
 
 		struct MeshPoint {
-			vec3 pos;
-			vec3 normal;
+			dvec3 pos;
+			dvec3 normal;
 			std::uint32_t index; // into the input vector
 			bool used = false;
 			std::vector<MeshEdge*> edges;
@@ -30,7 +30,7 @@ namespace bpa {
 			MeshPoint* a;
 			MeshPoint* b;
 			MeshPoint* opposite;
-			vec3 center;
+			dvec3 center;
 			MeshEdge* prev;
 			MeshEdge* next;
 			EdgeStatus status = EdgeStatus::active;
@@ -45,7 +45,7 @@ namespace bpa {
 		// Uniform grid of cells of side 2 * radius: every point a ball touching a point in a cell
 		// can touch lies in that cell or one of its 26 neighbours.
 		struct Grid {
-			Grid(const std::vector<Point>& points, float radius) : cellSize(radius * 2) {
+			Grid(const std::vector<Point>& points, double radius) : cellSize(radius * 2) {
 				lower = points.front().pos;
 				upper = points.front().pos;
 				for (const auto& p : points) {
@@ -58,12 +58,12 @@ namespace bpa {
 					cell(cellIndex(points[i].pos)).push_back({points[i].pos, points[i].normal, static_cast<std::uint32_t>(i)});
 			}
 
-			auto cellIndex(vec3 point) const -> ivec3 { return clamp(ivec3{(point - lower) / cellSize}, ivec3{}, dims - 1); }
+			auto cellIndex(dvec3 point) const -> ivec3 { return clamp(ivec3{(point - lower) / cellSize}, ivec3{}, dims - 1); }
 
 			auto cell(ivec3 index) -> Cell& { return cells[std::size_t(index.z) * dims.x * dims.y + std::size_t(index.y) * dims.x + index.x]; }
 
 			// The points within 2 * radius of `point`, except those in `ignore`.
-			auto sphericalNeighborhood(vec3 point, std::initializer_list<const MeshPoint*> ignore) -> std::vector<MeshPoint*> {
+			auto sphericalNeighborhood(dvec3 point, std::initializer_list<const MeshPoint*> ignore) -> std::vector<MeshPoint*> {
 				std::vector<MeshPoint*> result;
 				const auto centerIndex = cellIndex(point);
 				result.reserve(cell(centerIndex).size() * 27);
@@ -80,21 +80,24 @@ namespace bpa {
 				return result;
 			}
 
-			vec3 lower;
-			vec3 upper;
-			float cellSize;
+			dvec3 lower;
+			dvec3 upper;
+			double cellSize;
 			ivec3 dims;
 			std::vector<Cell> cells;
 		};
 
 		// Centre of the ball of the given radius through the three points of `f`, on the side of
 		// its normal; nothing if the circumradius is larger than the ball.
-		auto computeBallCenter(MeshFace f, float radius) -> std::optional<vec3> {
-			const vec3 ac = f[2]->pos - f[0]->pos;
-			const vec3 ab = f[1]->pos - f[0]->pos;
-			const vec3 abXac = cross(ab, ac);
-			const vec3 toCircumCircleCenter = (cross(abXac, ab) * dot(ac, ac) + cross(ac, abXac) * dot(ab, ab)) / (2 * dot(abXac, abXac));
-			const vec3 circumCircleCenter = f[0]->pos + toCircumCircleCenter;
+		auto computeBallCenter(MeshFace f, double radius) -> std::optional<dvec3> {
+			const dvec3 ac = f[2]->pos - f[0]->pos;
+			const dvec3 ab = f[1]->pos - f[0]->pos;
+			const dvec3 abXac = cross(ab, ac);
+			const auto nn = dot(abXac, abXac);
+			if (nn <= 1e-20 * dot(ab, ab) * dot(ac, ac)) // degenerate triangle
+				return {};
+			const dvec3 toCircumCircleCenter = (cross(abXac, ab) * dot(ac, ac) + cross(ac, abXac) * dot(ab, ab)) / (2 * nn);
+			const dvec3 circumCircleCenter = f[0]->pos + toCircumCircleCenter;
 
 			const auto heightSquared = radius * radius - dot(toCircumCircleCenter, toCircumCircleCenter);
 			if (heightSquared < 0)
@@ -102,20 +105,25 @@ namespace bpa {
 			return circumCircleCenter + f.normal() * std::sqrt(heightSquared);
 		}
 
-		auto ballIsEmpty(vec3 ballCenter, const std::vector<MeshPoint*>& points, float radius) -> bool {
-			return !std::any_of(begin(points), end(points), [&](MeshPoint* p) { return length2(p->pos - ballCenter) < radius * radius - 1e-4f; });
+		// Points within a relative 1e-9 of the sphere count as outside, so that the three points
+		// the ball touches, and points exactly cospherical with them, do not fail the test.
+		constexpr auto emptinessTolerance = 1e-9;
+
+		auto ballIsEmpty(dvec3 ballCenter, const std::vector<MeshPoint*>& points, double radius) -> bool {
+			const auto r2 = radius * (1 - emptinessTolerance) * radius * (1 - emptinessTolerance);
+			return !std::any_of(begin(points), end(points), [&](MeshPoint* p) { return length2(p->pos - ballCenter) < r2; });
 		}
 
 		struct SeedResult {
 			MeshFace f;
-			vec3 ballCenter;
+			dvec3 ballCenter;
 		};
 
 		// The first triangle of unused points whose ball is empty, cell by cell, with its normal
 		// on the side of the cell's average normal.
-		auto findSeedTriangle(Grid& grid, float radius) -> std::optional<SeedResult> {
+		auto findSeedTriangle(Grid& grid, double radius) -> std::optional<SeedResult> {
 			for (auto& cell : grid.cells) {
-				const auto avgNormal = normalize(std::accumulate(begin(cell), end(cell), vec3{}, [](vec3 acc, const MeshPoint& p) { return acc + p.normal; }));
+				const auto avgNormal = normalize(std::accumulate(begin(cell), end(cell), dvec3{}, [](dvec3 acc, const MeshPoint& p) { return acc + p.normal; }));
 				for (auto& p1 : cell) {
 					auto neighborhood = grid.sphericalNeighborhood(p1.pos, {&p1});
 					std::sort(begin(neighborhood), end(neighborhood), [&](MeshPoint* a, MeshPoint* b) { return length(a->pos - p1.pos) < length(b->pos - p1.pos); });
@@ -152,20 +160,20 @@ namespace bpa {
 
 		struct PivotResult {
 			MeshPoint* p;
-			vec3 center;
+			dvec3 center;
 		};
 
 		// Roll the ball around edge `e`, starting from its stored centre, and return the point it
 		// touches first together with the centre at that moment; nothing if it touches no point
 		// or the ball there is not empty.
-		auto ballPivot(const MeshEdge* e, Grid& grid, float radius) -> std::optional<PivotResult> {
-			const auto m = (e->a->pos + e->b->pos) / 2.0f;
+		auto ballPivot(const MeshEdge* e, Grid& grid, double radius) -> std::optional<PivotResult> {
+			const auto m = (e->a->pos + e->b->pos) / 2.0;
 			const auto oldCenterVec = normalize(e->center - m);
 			auto neighborhood = grid.sphericalNeighborhood(m, {e->a, e->b, e->opposite});
 
-			auto smallestAngle = std::numeric_limits<float>::max();
+			auto smallestAngle = std::numeric_limits<double>::max();
 			MeshPoint* pointWithSmallestAngle = nullptr;
-			vec3 centerOfSmallest{};
+			dvec3 centerOfSmallest{};
 			for (const auto& p : neighborhood) {
 				const auto newFaceNormal = MeshFace{{e->b, e->a, p}}.normal();
 
@@ -190,9 +198,9 @@ namespace bpa {
 				if (innerEdgeExists)
 					continue;
 
-				auto angle = std::acos(std::clamp(dot(oldCenterVec, newCenterVec), -1.0f, 1.0f));
+				auto angle = std::acos(std::clamp(dot(oldCenterVec, newCenterVec), -1.0, 1.0));
 				if (dot(cross(newCenterVec, oldCenterVec), e->a->pos - e->b->pos) < 0)
-					angle += std::numbers::pi_v<float>;
+					angle += std::numbers::pi;
 				if (angle < smallestAngle) {
 					smallestAngle = angle;
 					pointWithSmallestAngle = p;
@@ -216,7 +224,7 @@ namespace bpa {
 
 		void outputTriangle(MeshFace f, std::vector<Face>& triangles) { triangles.push_back({f[0]->index, f[1]->index, f[2]->index}); }
 
-		auto join(MeshEdge* e_ij, MeshPoint* o_k, vec3 o_k_ballCenter, std::vector<MeshEdge*>& front, std::deque<MeshEdge>& edges)
+		auto join(MeshEdge* e_ij, MeshPoint* o_k, dvec3 o_k_ballCenter, std::vector<MeshEdge*>& front, std::deque<MeshEdge>& edges)
 			-> std::pair<MeshEdge*, MeshEdge*> {
 			auto& e_ik = edges.emplace_back(MeshEdge{e_ij->a, o_k, e_ij->b, o_k_ballCenter});
 			auto& e_kj = edges.emplace_back(MeshEdge{o_k, e_ij->b, e_ij->a, o_k_ballCenter});
@@ -281,7 +289,7 @@ namespace bpa {
 		}
 	} // namespace
 
-	auto reconstruct(const std::vector<Point>& points, float radius) -> std::vector<Face> {
+	auto reconstruct(const std::vector<Point>& points, double radius) -> std::vector<Face> {
 		if (points.empty())
 			return {};
 		Grid grid(points, radius);

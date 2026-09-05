@@ -8,12 +8,12 @@
 
 namespace bpa {
 	struct Point {
-		glm::vec3 pos;
-		glm::vec3 normal;
+		glm::dvec3 pos;
+		glm::dvec3 normal;
 	};
 
 	// Three indices into the input point vector, counter-clockwise seen from outside.
 	using Face = std::array<std::uint32_t, 3>;
 
-	auto reconstruct(const std::vector<Point>& points, float radius) -> std::vector<Face>;
+	auto reconstruct(const std::vector<Point>& points, double radius) -> std::vector<Face>;
 } // namespace bpa
