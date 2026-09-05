@@ -123,7 +123,7 @@ namespace bpa {
 		// seed's other two vertices are almost always among the closest points, and for a
 		// candidate under an already reconstructed sheet every pair fails, so the loop must be
 		// cheap.
-		// Seed search (section 4.3 of the paper). Cells are visited from a cursor that persists
+		// Seed search (section 4.2 of the paper). Cells are visited from a cursor that persists
 		// between calls; a cell holding a used point is skipped (the paper's heuristic against
 		// spawning small components next to the surface, fig. 4c), else one candidate is tried,
 		// the point projecting furthest along the cell's average normal, paired with its nearest
@@ -155,7 +155,7 @@ namespace bpa {
 						if (p3->used)
 							continue;
 						// the seed must face along the normals of all three of its vertices (paper,
-						// section 4.3); the pair is tried with the winding that does, if either
+						// section 4.2); the pair is tried with the winding that does, if either
 						MeshFace f{{&p1, p2, p3}};
 						const auto n = f.normal();
 						const auto agrees = [&](double sign) {
