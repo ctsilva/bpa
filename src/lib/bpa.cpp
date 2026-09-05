@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cstdint>
 #include <deque>
-#include <iostream>
 #include <limits>
 #include <numbers>
 #include <numeric>
@@ -119,28 +118,49 @@ namespace bpa {
 			dvec3 ballCenter;
 		};
 
-		// The first triangle of unused points whose ball is empty, cell by cell, with its normal
-		// on the side of the cell's average normal.
-		auto findSeedTriangle(Grid& grid, double radius) -> std::optional<SeedResult> {
-			for (auto& cell : grid.cells) {
+		// Only the nearest this many neighbours of a seed candidate are paired: a valid seed's
+		// other two vertices are almost always among the closest points, and for a candidate
+		// under an already reconstructed sheet every pair fails, so the pair loop must be cheap.
+		constexpr std::size_t seedNeighbors = 100;
+
+		// Seed search (section 4.3 of the paper). Cells are visited from a cursor that persists
+		// between calls; a cell holding a used point is skipped (the paper's heuristic against
+		// spawning small components next to the surface, fig. 4c), else one candidate is tried,
+		// the point projecting furthest along the cell's average normal, paired with its nearest
+		// neighbours: the first triangle with an empty ball on the side of that normal is the
+		// seed. A candidate that fails cannot succeed later (points only become used), so the
+		// cursor never moves back; after a seed it stays, and the cell is skipped next time.
+		auto findSeedTriangle(Grid& grid, double radius, std::size_t& cursor) -> std::optional<SeedResult> {
+			for (; cursor < grid.cells.size(); cursor++) {
+				auto& cell = grid.cells[cursor];
+				if (cell.empty() || std::any_of(begin(cell), end(cell), [](const MeshPoint& p) { return p.used; }))
+					continue;
 				const auto avgNormal = normalize(std::accumulate(begin(cell), end(cell), dvec3{}, [](dvec3 acc, const MeshPoint& p) { return acc + p.normal; }));
-				for (auto& p1 : cell) {
-					auto neighborhood = grid.sphericalNeighborhood(p1.pos, {&p1});
-					std::sort(begin(neighborhood), end(neighborhood), [&](MeshPoint* a, MeshPoint* b) { return length(a->pos - p1.pos) < length(b->pos - p1.pos); });
-					for (auto& p2 : neighborhood) {
-						for (auto& p3 : neighborhood) {
-							if (p2 == p3)
-								continue;
-							MeshFace f{{&p1, p2, p3}};
-							if (dot(f.normal(), avgNormal) < 0)
-								continue;
-							const auto ballCenter = computeBallCenter(f, radius);
-							if (ballCenter && ballIsEmpty(ballCenter.value(), neighborhood, radius)) {
-								p1.used = true;
-								p2->used = true;
-								p3->used = true;
-								return SeedResult{f, ballCenter.value()};
-							}
+				const auto centroid = std::accumulate(begin(cell), end(cell), dvec3{}, [](dvec3 acc, const MeshPoint& p) { return acc + p.pos; }) / double(cell.size());
+				auto& p1 = *std::max_element(begin(cell), end(cell), [&](const MeshPoint& a, const MeshPoint& b) {
+					return dot(a.pos - centroid, avgNormal) < dot(b.pos - centroid, avgNormal);
+				});
+
+				auto neighborhood = grid.sphericalNeighborhood(p1.pos, {&p1});
+				std::sort(begin(neighborhood), end(neighborhood), [&](MeshPoint* a, MeshPoint* b) { return length(a->pos - p1.pos) < length(b->pos - p1.pos); });
+				const auto nPairs = std::min(neighborhood.size(), seedNeighbors);
+				for (std::size_t i2 = 0; i2 < nPairs; i2++) {
+					auto* p2 = neighborhood[i2];
+					if (p2->used)
+						continue;
+					for (std::size_t i3 = 0; i3 < nPairs; i3++) {
+						auto* p3 = neighborhood[i3];
+						if (p2 == p3 || p3->used)
+							continue;
+						MeshFace f{{&p1, p2, p3}};
+						if (dot(f.normal(), avgNormal) < 0)
+							continue;
+						const auto ballCenter = computeBallCenter(f, radius);
+						if (ballCenter && ballIsEmpty(ballCenter.value(), neighborhood, radius)) {
+							p1.used = true;
+							p2->used = true;
+							p3->used = true;
+							return SeedResult{f, ballCenter.value()};
 						}
 					}
 				}
@@ -294,39 +314,39 @@ namespace bpa {
 			return {};
 		Grid grid(points, radius);
 
-		const auto seedResult = findSeedTriangle(grid, radius);
-		if (!seedResult) {
-			std::cerr << "No seed triangle found\n";
-			return {};
-		}
-
 		std::vector<Face> triangles;
-		std::deque<MeshEdge> edges;
+		std::deque<MeshEdge> edges; // stable addresses
+		std::vector<MeshEdge*> front;
+		std::size_t seedCursor = 0;
 
-		auto [seed, ballCenter] = seedResult.value();
-		outputTriangle(seed, triangles);
-		auto& e0 = edges.emplace_back(MeshEdge{seed[0], seed[1], seed[2], ballCenter});
-		auto& e1 = edges.emplace_back(MeshEdge{seed[1], seed[2], seed[0], ballCenter});
-		auto& e2 = edges.emplace_back(MeshEdge{seed[2], seed[0], seed[1], ballCenter});
-		e0.prev = e1.next = &e2;
-		e0.next = e2.prev = &e1;
-		e1.prev = e2.next = &e0;
-		seed[0]->edges = {&e0, &e2};
-		seed[1]->edges = {&e0, &e1};
-		seed[2]->edges = {&e1, &e2};
-		std::vector<MeshEdge*> front{&e0, &e1, &e2};
+		// Fig. 5 of the paper: pivot until the front is exhausted, seed again among the points
+		// still unused, until no seed is left.
+		while (const auto seedResult = findSeedTriangle(grid, radius, seedCursor)) {
+			auto [seed, ballCenter] = seedResult.value();
+			outputTriangle(seed, triangles);
+			auto& e0 = edges.emplace_back(MeshEdge{seed[0], seed[1], seed[2], ballCenter});
+			auto& e1 = edges.emplace_back(MeshEdge{seed[1], seed[2], seed[0], ballCenter});
+			auto& e2 = edges.emplace_back(MeshEdge{seed[2], seed[0], seed[1], ballCenter});
+			e0.prev = e1.next = &e2;
+			e0.next = e2.prev = &e1;
+			e1.prev = e2.next = &e0;
+			seed[0]->edges = {&e0, &e2};
+			seed[1]->edges = {&e0, &e1};
+			seed[2]->edges = {&e1, &e2};
+			front.insert(end(front), {&e0, &e1, &e2});
 
-		while (auto e_ij = getActiveEdge(front)) {
-			const auto o_k = ballPivot(e_ij.value(), grid, radius);
-			if (o_k && (notUsed(o_k->p) || onFront(o_k->p))) {
-				outputTriangle({{e_ij.value()->a, o_k->p, e_ij.value()->b}}, triangles);
-				auto [e_ik, e_kj] = join(e_ij.value(), o_k->p, o_k->center, front, edges);
-				if (auto* e_ki = findReverseEdgeOnFront(e_ik))
-					glue(e_ik, e_ki);
-				if (auto* e_jk = findReverseEdgeOnFront(e_kj))
-					glue(e_kj, e_jk);
-			} else {
-				e_ij.value()->status = EdgeStatus::boundary;
+			while (auto e_ij = getActiveEdge(front)) {
+				const auto o_k = ballPivot(e_ij.value(), grid, radius);
+				if (o_k && (notUsed(o_k->p) || onFront(o_k->p))) {
+					outputTriangle({{e_ij.value()->a, o_k->p, e_ij.value()->b}}, triangles);
+					auto [e_ik, e_kj] = join(e_ij.value(), o_k->p, o_k->center, front, edges);
+					if (auto* e_ki = findReverseEdgeOnFront(e_ik))
+						glue(e_ik, e_ki);
+					if (auto* e_jk = findReverseEdgeOnFront(e_kj))
+						glue(e_kj, e_jk);
+				} else {
+					e_ij.value()->status = EdgeStatus::boundary;
+				}
 			}
 		}
 
