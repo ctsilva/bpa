@@ -76,8 +76,8 @@ The implementations below were run on the same inputs by the comparison harness 
 [BPA.jl](https://github.com/ctsilva/BPA.jl) (`compare/`), which checks every output on its
 own terms: each triangle must admit an empty ball of the radius on its outward side, and the
 mesh must be orientable and edge-manifold. Synthetic surfaces, the Stanford bunny scans
-(single, four and ten merged) and the 62 dragon scans (1.83 million points); a MacBook Air
-with an Apple M5, single-threaded, times for the reconstruction alone.
+(single, four and ten merged) and the 62 dragon scans (1.83 million points); a MacBook Pro
+with an Apple M3 Max, single-threaded, times for the reconstruction alone.
 
 | case | points | ρ | this code | BPA.jl | Open3D | IPOL (Digne) | MeshLab |
 |---|---|---|---|---|---|---|---|
