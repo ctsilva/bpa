@@ -128,8 +128,8 @@ namespace bpa {
 		// between calls; a cell holding a used point is skipped (the paper's heuristic against
 		// spawning small components next to the surface, fig. 4c), else one candidate is tried,
 		// the point projecting furthest along the cell's average normal, paired with its nearest
-		// neighbours: the first triangle with an empty ball on the side of that normal is the
-		// seed. A candidate that fails cannot succeed later (points only become used), so the
+		// neighbours: the first triangle facing along its vertex normals with an empty ball on
+		// that side is the seed. A candidate that fails cannot succeed later (points only become used), so the
 		// cursor never moves back; after a seed it stays, and the cell is skipped next time.
 		auto findSeedTriangle(Grid& grid, double radius, std::size_t& cursor) -> std::optional<SeedResult> {
 			for (; cursor < grid.cells.size(); cursor++) {
@@ -149,12 +149,18 @@ namespace bpa {
 					auto* p2 = neighborhood[i2];
 					if (p2->used)
 						continue;
-					for (std::size_t i3 = 0; i3 < nPairs; i3++) {
+					for (std::size_t i3 = i2 + 1; i3 < nPairs; i3++) {
 						auto* p3 = neighborhood[i3];
-						if (p2 == p3 || p3->used)
+						if (p3->used)
 							continue;
+						// the seed must face along the normals of all three of its vertices (paper,
+						// section 4.3); the pair is tried with the winding that does, if either
 						MeshFace f{{&p1, p2, p3}};
-						if (dot(f.normal(), avgNormal) < 0)
+						const auto n = f.normal();
+						const auto agrees = [&](double sign) { return sign * dot(n, p1.normal) >= 0 && sign * dot(n, p2->normal) >= 0 && sign * dot(n, p3->normal) >= 0; };
+						if (agrees(-1))
+							std::swap(f[1], f[2]);
+						else if (!agrees(1))
 							continue;
 						const auto ballCenter = computeBallCenter(f, radius);
 						if (ballCenter && ballIsEmpty(ballCenter.value(), neighborhood, radius)) {
