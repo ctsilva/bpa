@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <glm/gtx/norm.hpp>
@@ -15,5 +16,13 @@ namespace bpa {
 	// Three indices into the input point vector, counter-clockwise seen from outside.
 	using Face = std::array<std::uint32_t, 3>;
 
-	auto reconstruct(const std::vector<Point>& points, double radius) -> std::vector<Face>;
+	struct Options {
+		// Only the nearest this many neighbours of a seed candidate are paired (0: all within
+		// 2 x radius, the paper's unbounded search).
+		std::size_t seedNeighbors = 100;
+		// Drop connected components with fewer triangles than this (0: keep everything).
+		std::size_t minComponent = 0;
+	};
+
+	auto reconstruct(const std::vector<Point>& points, double radius, const Options& options = {}) -> std::vector<Face>;
 } // namespace bpa

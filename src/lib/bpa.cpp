@@ -1,9 +1,9 @@
 #include "bpa.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <deque>
-#include <cmath>
 #include <limits>
 #include <numbers>
 #include <numeric>
@@ -119,11 +119,10 @@ namespace bpa {
 			dvec3 ballCenter;
 		};
 
-		// Only the nearest this many neighbours of a seed candidate are paired: a valid seed's
-		// other two vertices are almost always among the closest points, and for a candidate
-		// under an already reconstructed sheet every pair fails, so the pair loop must be cheap.
-		constexpr std::size_t seedNeighbors = 100;
-
+		// Only the nearest `seedNeighbors` neighbours of a seed candidate are paired: a valid
+		// seed's other two vertices are almost always among the closest points, and for a
+		// candidate under an already reconstructed sheet every pair fails, so the loop must be
+		// cheap.
 		// Seed search (section 4.3 of the paper). Cells are visited from a cursor that persists
 		// between calls; a cell holding a used point is skipped (the paper's heuristic against
 		// spawning small components next to the surface, fig. 4c), else one candidate is tried,
@@ -131,20 +130,22 @@ namespace bpa {
 		// neighbours: the first triangle facing along its vertex normals with an empty ball on
 		// that side is the seed. A candidate that fails cannot succeed later (points only become used), so the
 		// cursor never moves back; after a seed it stays, and the cell is skipped next time.
-		auto findSeedTriangle(Grid& grid, double radius, std::size_t& cursor) -> std::optional<SeedResult> {
+		auto findSeedTriangle(Grid& grid, double radius, std::size_t seedNeighbors, std::size_t& cursor) -> std::optional<SeedResult> {
 			for (; cursor < grid.cells.size(); cursor++) {
 				auto& cell = grid.cells[cursor];
 				if (cell.empty() || std::any_of(begin(cell), end(cell), [](const MeshPoint& p) { return p.used; }))
 					continue;
-				const auto avgNormal = normalize(std::accumulate(begin(cell), end(cell), dvec3{}, [](dvec3 acc, const MeshPoint& p) { return acc + p.normal; }));
-				const auto centroid = std::accumulate(begin(cell), end(cell), dvec3{}, [](dvec3 acc, const MeshPoint& p) { return acc + p.pos; }) / double(cell.size());
-				auto& p1 = *std::max_element(begin(cell), end(cell), [&](const MeshPoint& a, const MeshPoint& b) {
-					return dot(a.pos - centroid, avgNormal) < dot(b.pos - centroid, avgNormal);
-				});
+				const auto avgNormal =
+					normalize(std::accumulate(begin(cell), end(cell), dvec3{}, [](dvec3 acc, const MeshPoint& p) { return acc + p.normal; }));
+				const auto centroid =
+					std::accumulate(begin(cell), end(cell), dvec3{}, [](dvec3 acc, const MeshPoint& p) { return acc + p.pos; }) / double(cell.size());
+				auto& p1 = *std::max_element(begin(cell), end(cell),
+					[&](const MeshPoint& a, const MeshPoint& b) { return dot(a.pos - centroid, avgNormal) < dot(b.pos - centroid, avgNormal); });
 
 				auto neighborhood = grid.sphericalNeighborhood(p1.pos, {&p1});
-				std::sort(begin(neighborhood), end(neighborhood), [&](MeshPoint* a, MeshPoint* b) { return length(a->pos - p1.pos) < length(b->pos - p1.pos); });
-				const auto nPairs = std::min(neighborhood.size(), seedNeighbors);
+				std::sort(
+					begin(neighborhood), end(neighborhood), [&](MeshPoint* a, MeshPoint* b) { return length(a->pos - p1.pos) < length(b->pos - p1.pos); });
+				const auto nPairs = seedNeighbors == 0 ? neighborhood.size() : std::min(neighborhood.size(), seedNeighbors);
 				for (std::size_t i2 = 0; i2 < nPairs; i2++) {
 					auto* p2 = neighborhood[i2];
 					if (p2->used)
@@ -157,7 +158,9 @@ namespace bpa {
 						// section 4.3); the pair is tried with the winding that does, if either
 						MeshFace f{{&p1, p2, p3}};
 						const auto n = f.normal();
-						const auto agrees = [&](double sign) { return sign * dot(n, p1.normal) >= 0 && sign * dot(n, p2->normal) >= 0 && sign * dot(n, p3->normal) >= 0; };
+						const auto agrees = [&](double sign) {
+							return sign * dot(n, p1.normal) >= 0 && sign * dot(n, p2->normal) >= 0 && sign * dot(n, p3->normal) >= 0;
+						};
 						if (agrees(-1))
 							std::swap(f[1], f[2]);
 						else if (!agrees(1))
@@ -201,9 +204,8 @@ namespace bpa {
 
 		// The undirected edge {i, j} already has two triangles.
 		auto isClosed(const MeshPoint* i, const MeshPoint* j) -> bool {
-			return std::any_of(begin(i->edges), end(i->edges), [&](const MeshEdge* e) {
-				return e->status == EdgeStatus::inner && ((e->a == i && e->b == j) || (e->a == j && e->b == i));
-			});
+			return std::any_of(begin(i->edges), end(i->edges),
+				[&](const MeshEdge* e) { return e->status == EdgeStatus::inner && ((e->a == i && e->b == j) || (e->a == j && e->b == i)); });
 		}
 
 		// The tests the paper applies to the point k the ball lands on when pivoting e = (a, b)
@@ -275,7 +277,10 @@ namespace bpa {
 			const auto phi = std::atan2(dv, du);
 			const auto alpha = std::acos(std::clamp(ratio, -1.0, 1.0));
 			constexpr auto twoPi = 2 * std::numbers::pi;
-			const auto mod2pi = [](double t) { t = std::fmod(t, twoPi); return t < 0 ? t + twoPi : t; };
+			const auto mod2pi = [](double t) {
+				t = std::fmod(t, twoPi);
+				return t < 0 ? t + twoPi : t;
+			};
 			const auto ta = mod2pi(phi + alpha);
 			const auto tb = mod2pi(phi - alpha);
 			const auto touching = [](double t) { return t < touchTolerance || t > twoPi - touchTolerance; };
@@ -427,9 +432,26 @@ namespace bpa {
 					return e;
 			return nullptr;
 		}
+
+		// Remove the connected components with fewer than minComponent triangles.
+		void dropSmallComponents(std::vector<Face>& triangles, std::size_t nPoints, std::size_t minComponent) {
+			std::vector<std::uint32_t> parent(nPoints);
+			std::iota(begin(parent), end(parent), 0);
+			const auto root = [&](std::uint32_t x) {
+				while (parent[x] != x)
+					x = parent[x] = parent[parent[x]];
+				return x;
+			};
+			for (const auto& t : triangles)
+				parent[root(t[0])] = parent[root(t[1])] = root(t[2]);
+			std::vector<std::size_t> size(nPoints);
+			for (const auto& t : triangles)
+				size[root(t[0])]++;
+			std::erase_if(triangles, [&](const Face& t) { return size[root(t[0])] < minComponent; });
+		}
 	} // namespace
 
-	auto reconstruct(const std::vector<Point>& points, double radius) -> std::vector<Face> {
+	auto reconstruct(const std::vector<Point>& points, double radius, const Options& options) -> std::vector<Face> {
 		if (points.empty())
 			return {};
 		Grid grid(points, radius);
@@ -441,7 +463,7 @@ namespace bpa {
 
 		// Fig. 5 of the paper: pivot until the front is exhausted, seed again among the points
 		// still unused, until no seed is left.
-		while (const auto seedResult = findSeedTriangle(grid, radius, seedCursor)) {
+		while (const auto seedResult = findSeedTriangle(grid, radius, options.seedNeighbors, seedCursor)) {
 			auto [seed, ballCenter] = seedResult.value();
 			outputTriangle(seed, triangles);
 			auto& e0 = edges.emplace_back(MeshEdge{seed[0], seed[1], seed[2], ballCenter});
@@ -470,6 +492,8 @@ namespace bpa {
 			}
 		}
 
+		if (options.minComponent > 1)
+			dropSmallComponents(triangles, points.size(), options.minComponent);
 		return triangles;
 	}
 } // namespace bpa
