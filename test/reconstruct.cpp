@@ -177,7 +177,7 @@ TEST_CASE("radius too small for the spacing", "[reconstruct]") {
 }
 
 TEST_CASE("bunny", "[reconstruct]") {
-	const auto cloud = loadXYZ("../test/data/bunny.xyz");
+	const auto cloud = loadXYZ(TEST_DATA_DIR "/bunny.xyz");
 	const auto mesh = measuredReconstruct(cloud, 0.002);
 	const auto s = stats(mesh, cloud.size());
 	CHECK(mesh.size() > 60000);
