@@ -83,7 +83,7 @@ with an Apple M5, single-threaded, times for the reconstruction alone.
 |---|---|---|---|---|---|---|---|
 | bunny, 1 scan | 40 256 | 1.25 mm | 78 162 triangles, 0.09 s | 78 152, 0.12 s | 77 994, 0.35 s | 77 941, 0.51 s | 78 203, 0.28 s |
 | bunny, 10 scans | 362 272 | 1.25 mm | 323 920, 1.1 s | 323 934, 1.6 s | 317 975, 37 s | 323 808, 82 s | 477 737, 295 s |
-| dragon, 62 scans | 1 830 000 | 0.7 mm | 649 459, 4.3 s | 649 518, 6.6 s | 624 851, 831 s | 631 174, 1987 s | 2 545 632, 5.4 h |
+| dragon, 62 scans | 1 830 000 | 0.7 mm | 649 459, 4.5 s | 649 518, 6.6 s | 624 851, 831 s | 631 174, 1987 s | 2 545 632, 5.4 h |
 
 On the eight synthetic inputs (sphere, plane, four tori including an exact lattice, two knot
 radii) this code and BPA.jl produce identical triangle sets. On the scans no triangle of
