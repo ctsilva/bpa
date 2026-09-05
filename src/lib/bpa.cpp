@@ -8,6 +8,7 @@
 #include <numbers>
 #include <numeric>
 #include <optional>
+#include <stdexcept>
 #include <vector>
 
 using namespace glm;
@@ -40,12 +41,19 @@ namespace bpa {
 			auto normal() const { return normalize(cross((*this)[0]->pos - (*this)[1]->pos, (*this)[0]->pos - (*this)[2]->pos)); }
 		};
 
-		using Cell = std::vector<MeshPoint>;
+		// A cell keeps a copy of each position next to the point, so that scanning a cell for
+		// the points within reach reads memory in order and follows the pointer only for those.
+		struct CellEntry {
+			dvec3 pos;
+			MeshPoint* p;
+		};
+		using Cell = std::vector<CellEntry>;
 
 		// Uniform grid of cells of side 2 * radius: every point a ball touching a point in a cell
-		// can touch lies in that cell or one of its 26 neighbours.
+		// can touch lies in that cell or one of its 26 neighbours. The points are owned by the
+		// caller; a grid is built for each radius.
 		struct Grid {
-			Grid(const std::vector<Point>& points, double radius) : cellSize(radius * 2) {
+			Grid(std::vector<MeshPoint>& points, double radius) : cellSize(radius * 2) {
 				lower = points.front().pos;
 				upper = points.front().pos;
 				for (const auto& p : points) {
@@ -54,17 +62,19 @@ namespace bpa {
 				}
 				dims = max(ivec3{ceil((upper - lower) / cellSize)}, ivec3{1});
 				cells.resize(std::size_t(dims.x) * dims.y * dims.z);
-				for (std::size_t i = 0; i < points.size(); i++)
-					cell(cellIndex(points[i].pos)).push_back({points[i].pos, points[i].normal, static_cast<std::uint32_t>(i)});
+				for (auto& p : points)
+					cell(cellIndex(p.pos)).push_back({p.pos, &p});
 			}
 
 			auto cellIndex(dvec3 point) const -> ivec3 { return clamp(ivec3{(point - lower) / cellSize}, ivec3{}, dims - 1); }
 
-			auto cell(ivec3 index) -> Cell& { return cells[std::size_t(index.z) * dims.x * dims.y + std::size_t(index.y) * dims.x + index.x]; }
+			auto linearIndex(ivec3 index) const -> std::size_t { return std::size_t(index.z) * dims.x * dims.y + std::size_t(index.y) * dims.x + index.x; }
+
+			auto cell(ivec3 index) -> Cell& { return cells[linearIndex(index)]; }
 
 			// The points within 2 * radius of `point`, except those in `ignore`.
-			auto sphericalNeighborhood(dvec3 point, std::initializer_list<const MeshPoint*> ignore) -> std::vector<MeshPoint*> {
-				std::vector<MeshPoint*> result;
+			auto sphericalNeighborhood(dvec3 point, std::initializer_list<const MeshPoint*> ignore) -> std::vector<CellEntry> {
+				std::vector<CellEntry> result;
 				const auto centerIndex = cellIndex(point);
 				result.reserve(cell(centerIndex).size() * 27);
 				for (auto xOff : {-1, 0, 1})
@@ -73,9 +83,9 @@ namespace bpa {
 							const auto index = centerIndex + ivec3{xOff, yOff, zOff};
 							if (any(lessThan(index, ivec3{})) || any(greaterThanEqual(index, dims)))
 								continue;
-							for (auto& p : cell(index))
-								if (length2(p.pos - point) < cellSize * cellSize && std::find(begin(ignore), end(ignore), &p) == end(ignore))
-									result.push_back(&p);
+							for (const auto& e : cell(index))
+								if (length2(e.pos - point) < cellSize * cellSize && std::find(begin(ignore), end(ignore), e.p) == end(ignore))
+									result.push_back(e);
 						}
 				return result;
 			}
@@ -109,9 +119,9 @@ namespace bpa {
 		// the ball touches, and points exactly cospherical with them, do not fail the test.
 		constexpr auto emptinessTolerance = 1e-9;
 
-		auto ballIsEmpty(dvec3 ballCenter, const std::vector<MeshPoint*>& points, double radius) -> bool {
+		auto ballIsEmpty(dvec3 ballCenter, const std::vector<CellEntry>& points, double radius) -> bool {
 			const auto r2 = radius * (1 - emptinessTolerance) * radius * (1 - emptinessTolerance);
-			return !std::any_of(begin(points), end(points), [&](MeshPoint* p) { return length2(p->pos - ballCenter) < r2; });
+			return !std::any_of(begin(points), end(points), [&](const CellEntry& e) { return length2(e.pos - ballCenter) < r2; });
 		}
 
 		struct SeedResult {
@@ -133,25 +143,26 @@ namespace bpa {
 		auto findSeedTriangle(Grid& grid, double radius, std::size_t seedNeighbors, std::size_t& cursor) -> std::optional<SeedResult> {
 			for (; cursor < grid.cells.size(); cursor++) {
 				auto& cell = grid.cells[cursor];
-				if (cell.empty() || std::any_of(begin(cell), end(cell), [](const MeshPoint& p) { return p.used; }))
+				if (cell.empty() || std::any_of(begin(cell), end(cell), [](const CellEntry& e) { return e.p->used; }))
 					continue;
 				const auto avgNormal =
-					normalize(std::accumulate(begin(cell), end(cell), dvec3{}, [](dvec3 acc, const MeshPoint& p) { return acc + p.normal; }));
+					normalize(std::accumulate(begin(cell), end(cell), dvec3{}, [](dvec3 acc, const CellEntry& e) { return acc + e.p->normal; }));
 				const auto centroid =
-					std::accumulate(begin(cell), end(cell), dvec3{}, [](dvec3 acc, const MeshPoint& p) { return acc + p.pos; }) / double(cell.size());
-				auto& p1 = *std::max_element(begin(cell), end(cell),
-					[&](const MeshPoint& a, const MeshPoint& b) { return dot(a.pos - centroid, avgNormal) < dot(b.pos - centroid, avgNormal); });
+					std::accumulate(begin(cell), end(cell), dvec3{}, [](dvec3 acc, const CellEntry& e) { return acc + e.pos; }) / double(cell.size());
+				auto& p1 = *std::max_element(begin(cell), end(cell), [&](const CellEntry& a, const CellEntry& b) {
+					return dot(a.pos - centroid, avgNormal) < dot(b.pos - centroid, avgNormal);
+				})->p;
 
 				auto neighborhood = grid.sphericalNeighborhood(p1.pos, {&p1});
-				std::sort(
-					begin(neighborhood), end(neighborhood), [&](MeshPoint* a, MeshPoint* b) { return length(a->pos - p1.pos) < length(b->pos - p1.pos); });
+				std::sort(begin(neighborhood), end(neighborhood),
+					[&](const CellEntry& a, const CellEntry& b) { return length(a.pos - p1.pos) < length(b.pos - p1.pos); });
 				const auto nPairs = seedNeighbors == 0 ? neighborhood.size() : std::min(neighborhood.size(), seedNeighbors);
 				for (std::size_t i2 = 0; i2 < nPairs; i2++) {
-					auto* p2 = neighborhood[i2];
+					auto* p2 = neighborhood[i2].p;
 					if (p2->used)
 						continue;
 					for (std::size_t i3 = i2 + 1; i3 < nPairs; i3++) {
-						auto* p3 = neighborhood[i3];
+						auto* p3 = neighborhood[i3].p;
 						if (p3->used)
 							continue;
 						// the seed must face along the normals of all three of its vertices (paper,
@@ -353,8 +364,8 @@ namespace bpa {
 			MeshPoint* best = nullptr;
 			Contact bestContact{};
 			auto nTies = 0;
-			for (auto* p : neighborhood) {
-				const auto c = pivotContact(*fr, p->pos, radius);
+			for (const auto& [pos, p] : neighborhood) {
+				const auto c = pivotContact(*fr, pos, radius);
 				if (!c)
 					continue;
 				if (!best) {
@@ -384,10 +395,10 @@ namespace bpa {
 			MeshPoint* choice = nullptr;
 			Contact choiceContact{};
 			auto bestScore = -1;
-			for (auto* p : neighborhood) {
+			for (const auto& [pos, p] : neighborhood) {
 				if (p == e->opposite)
 					continue;
-				const auto c = pivotContact(*fr, p->pos, radius);
+				const auto c = pivotContact(*fr, pos, radius);
 				if (!c || !(angleTie(*c, bestContact, r2, tieSin) || angleLess(*c, bestContact)))
 					continue;
 				const auto score = tieScore(e, p);
@@ -488,45 +499,83 @@ namespace bpa {
 				size[root(t[0])]++;
 			std::erase_if(triangles, [&](const Face& t) { return size[root(t[0])] < minComponent; });
 		}
+		// Section 4.6 of the paper: with a larger radius, every boundary edge whose triangle
+		// admits an empty ball of the new radius becomes active again with that ball, so that
+		// the front can grow across gaps the smaller ball could not cross.
+		auto reactivate(std::deque<MeshEdge>& edges, Grid& grid, double radius, std::vector<MeshEdge*>& front) -> std::size_t {
+			std::size_t n = 0;
+			for (auto& e : edges) {
+				if (e.status != EdgeStatus::boundary)
+					continue;
+				const auto c = computeBallCenter(MeshFace{{e.a, e.b, e.opposite}}, radius);
+				if (!c || !ballIsEmpty(*c, grid.sphericalNeighborhood(e.a->pos, {e.a, e.b, e.opposite}), radius))
+					continue;
+				e.status = EdgeStatus::active;
+				e.center = *c;
+				front.push_back(&e);
+				n++;
+			}
+			return n;
+		}
 	} // namespace
 
-	auto reconstruct(const std::vector<Point>& points, double radius, const Options& options) -> std::vector<Face> {
+	auto reconstruct(const std::vector<Point>& points, std::vector<double> radii, const Options& options) -> std::vector<Face> {
+		if (radii.empty() || std::any_of(begin(radii), end(radii), [](double r) { return !(r > 0); }))
+			throw std::invalid_argument("bpa::reconstruct: at least one radius, all positive, is required");
+		std::sort(begin(radii), end(radii));
 		if (points.empty())
 			return {};
-		Grid grid(points, radius);
+
+		std::vector<MeshPoint> meshPoints;
+		meshPoints.reserve(points.size());
+		for (std::size_t i = 0; i < points.size(); i++)
+			meshPoints.push_back({points[i].pos, points[i].normal, static_cast<std::uint32_t>(i)});
 
 		std::vector<Face> triangles;
 		std::deque<MeshEdge> edges; // stable addresses
 		std::vector<MeshEdge*> front;
-		std::size_t seedCursor = 0;
 
-		// Fig. 5 of the paper: pivot until the front is exhausted, seed again among the points
-		// still unused, until no seed is left.
-		while (const auto seedResult = findSeedTriangle(grid, radius, options.seedNeighbors, seedCursor)) {
-			auto [seed, ballCenter] = seedResult.value();
-			outputTriangle(seed, triangles);
-			auto& e0 = edges.emplace_back(MeshEdge{seed[0], seed[1], seed[2], ballCenter});
-			auto& e1 = edges.emplace_back(MeshEdge{seed[1], seed[2], seed[0], ballCenter});
-			auto& e2 = edges.emplace_back(MeshEdge{seed[2], seed[0], seed[1], ballCenter});
-			e0.prev = e1.next = &e2;
-			e0.next = e2.prev = &e1;
-			e1.prev = e2.next = &e0;
-			seed[0]->edges = {&e0, &e2};
-			seed[1]->edges = {&e0, &e1};
-			seed[2]->edges = {&e1, &e2};
-			front.insert(end(front), {&e0, &e1, &e2});
+		for (std::size_t pass = 0; pass < radii.size(); pass++) {
+			const auto radius = radii[pass];
+			Grid grid(meshPoints, radius);
+			if (pass > 0)
+				reactivate(edges, grid, radius, front);
+			std::size_t seedCursor = 0;
 
-			while (auto e_ij = getActiveEdge(front)) {
-				const auto o_k = ballPivot(e_ij.value(), grid, radius);
-				if (o_k && canAddTriangle(e_ij.value(), o_k->p)) {
-					outputTriangle({{e_ij.value()->a, o_k->p, e_ij.value()->b}}, triangles);
-					auto [e_ik, e_kj] = join(e_ij.value(), o_k->p, o_k->center, front, edges);
-					if (auto* e_ki = findReverseEdgeOnFront(e_ik))
-						glue(e_ik, e_ki);
-					if (auto* e_jk = findReverseEdgeOnFront(e_kj))
-						glue(e_kj, e_jk);
-				} else {
-					e_ij.value()->status = EdgeStatus::boundary;
+			// Fig. 5 of the paper: pivot until the front is exhausted, seed again among the
+			// points still unused, until no seed is left. A pass after the first starts from
+			// the edges reactivate() put back on the front.
+			for (auto first = true;; first = false) {
+				if (!first || front.empty()) {
+					const auto seedResult = findSeedTriangle(grid, radius, options.seedNeighbors, seedCursor);
+					if (!seedResult)
+						break;
+					auto [seed, ballCenter] = seedResult.value();
+					outputTriangle(seed, triangles);
+					auto& e0 = edges.emplace_back(MeshEdge{seed[0], seed[1], seed[2], ballCenter});
+					auto& e1 = edges.emplace_back(MeshEdge{seed[1], seed[2], seed[0], ballCenter});
+					auto& e2 = edges.emplace_back(MeshEdge{seed[2], seed[0], seed[1], ballCenter});
+					e0.prev = e1.next = &e2;
+					e0.next = e2.prev = &e1;
+					e1.prev = e2.next = &e0;
+					seed[0]->edges = {&e0, &e2};
+					seed[1]->edges = {&e0, &e1};
+					seed[2]->edges = {&e1, &e2};
+					front.insert(end(front), {&e0, &e1, &e2});
+				}
+
+				while (auto e_ij = getActiveEdge(front)) {
+					const auto o_k = ballPivot(e_ij.value(), grid, radius);
+					if (o_k && canAddTriangle(e_ij.value(), o_k->p)) {
+						outputTriangle({{e_ij.value()->a, o_k->p, e_ij.value()->b}}, triangles);
+						auto [e_ik, e_kj] = join(e_ij.value(), o_k->p, o_k->center, front, edges);
+						if (auto* e_ki = findReverseEdgeOnFront(e_ik))
+							glue(e_ik, e_ki);
+						if (auto* e_jk = findReverseEdgeOnFront(e_kj))
+							glue(e_kj, e_jk);
+					} else {
+						e_ij.value()->status = EdgeStatus::boundary;
+					}
 				}
 			}
 		}
@@ -534,5 +583,9 @@ namespace bpa {
 		if (options.minComponent > 1)
 			dropSmallComponents(triangles, points.size(), options.minComponent);
 		return triangles;
+	}
+
+	auto reconstruct(const std::vector<Point>& points, double radius, const Options& options) -> std::vector<Face> {
+		return reconstruct(points, std::vector<double>{radius}, options);
 	}
 } // namespace bpa

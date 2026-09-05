@@ -1,4 +1,5 @@
 #include <IO.h>
+#include <algorithm>
 #include <bpa.h>
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
@@ -125,9 +126,54 @@ TEST_CASE("minComponent drops the small sphere", "[reconstruct]") {
 	CHECK(large.size() == 2 * 1000 - 4);
 }
 
+namespace {
+	// A jittered grid of nx x ny points in the plane z = 0 with normal +z, spacing h.
+	auto planePatch(int nx, int ny, double h, glm::dvec3 origin, unsigned seed) -> std::vector<Point> {
+		std::vector<Point> points;
+		auto state = seed;
+		const auto jitter = [&] {
+			state = state * 1664525u + 1013904223u;
+			return (state / 4294967296.0 - 0.5) * 0.4 * h;
+		};
+		for (auto j = 0; j < ny; j++)
+			for (auto i = 0; i < nx; i++)
+				points.push_back({origin + glm::dvec3{i * h + jitter(), j * h + jitter(), 0}, {0, 0, 1}});
+		return points;
+	}
+} // namespace
+
+TEST_CASE("multiple radii on uneven sampling", "[reconstruct]") {
+	// a dense patch next to a patch sampled 2.5 times as coarsely
+	const auto h = 1.0 / 40;
+	auto cloud = planePatch(20, 40, h, {0, 0, 0}, 3);
+	const auto sparse = planePatch(8, 16, 2.5 * h, {20 * h, 0, 0}, 4);
+	cloud.insert(cloud.end(), sparse.begin(), sparse.end());
+
+	// one small radius: the sparse patch is not reached
+	const auto one = reconstruct(cloud, 1.3 * h);
+	const auto s1 = stats(one, cloud.size());
+	CHECK(s1.verticesUsed < cloud.size());
+	CHECK(s1.badEdges == 0);
+
+	// two radii: everything is covered by one disk; the first pass is the single-radius mesh
+	const auto two = reconstruct(cloud, std::vector<double>{1.3 * h, 1.3 * 2.5 * h});
+	const auto s2 = stats(two, cloud.size());
+	CHECK(s2.verticesUsed == cloud.size());
+	CHECK(s2.components == 1);
+	CHECK(s2.badEdges == 0);
+	CHECK(s2.eulerCharacteristic == 1);
+	CHECK(two.size() > one.size());
+	CHECK(std::equal(one.begin(), one.end(), two.begin()));
+
+	// the order of the radii does not matter
+	CHECK(reconstruct(cloud, std::vector<double>{1.3 * 2.5 * h, 1.3 * h}) == two);
+}
+
 TEST_CASE("radius too small for the spacing", "[reconstruct]") {
 	const auto cloud = fibonacciSphere(2000);
 	CHECK(reconstruct(cloud, 0.01).empty());
+	CHECK_THROWS(reconstruct(cloud, std::vector<double>{}));
+	CHECK_THROWS(reconstruct(cloud, -1.0));
 }
 
 TEST_CASE("bunny", "[reconstruct]") {

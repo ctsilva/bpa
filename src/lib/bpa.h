@@ -25,4 +25,9 @@ namespace bpa {
 	};
 
 	auto reconstruct(const std::vector<Point>& points, double radius, const Options& options = {}) -> std::vector<Face>;
+
+	// Several radii, in one pass each from the smallest (section 4.6 of the paper): the mesh of
+	// one pass is kept, and its boundary edges whose triangles admit an empty ball of the next
+	// radius resume pivoting with it, so that gaps the smaller ball could not cross are closed.
+	auto reconstruct(const std::vector<Point>& points, std::vector<double> radii, const Options& options = {}) -> std::vector<Face>;
 } // namespace bpa

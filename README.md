@@ -35,13 +35,16 @@ cmake --build build
 ## Using it
 
 ```
-./build/bpa <points> <radius> [<mesh>] [--min-component N] [--seed-neighbors N]
+./build/bpa <points> <radius>[,<radius>...] [<mesh>] [--min-component N] [--seed-neighbors N]
 ```
 
 `<points>` is either an `.xyz` file with `x y z nx ny nz` per line or a `.noff`/`.off` file
 with a `NOFF` header (vertices with normals). The normals decide which side of the surface
 the ball rolls on; they need not be unit length. `<radius>` is the ball radius in the units
-of the points; around 1.5 times the mean point spacing is a reasonable start. The mesh is
+of the points; around 1.5 times the mean point spacing is a reasonable start. Several
+radii, comma-separated, give one pass each from the smallest (section 4.6 of the paper): the
+boundary edges left by one ball resume pivoting with the next, larger one, so that gaps the
+small ball could not cross are closed while the fine detail it captured is kept. The mesh is
 written as OFF, with the input vertices in their order, or as binary STL if the name ends in
 `.stl`.
 
@@ -51,7 +54,7 @@ From C++:
 #include <bpa.h>
 
 std::vector<bpa::Point> points = ...;              // {glm::dvec3 pos, glm::dvec3 normal}
-std::vector<bpa::Face> faces = bpa::reconstruct(points, radius);
+std::vector<bpa::Face> faces = bpa::reconstruct(points, radius);   // or a std::vector of radii
 // faces[i] = {a, b, c}: indices into `points`, counter-clockwise seen from outside
 ```
 
@@ -64,8 +67,8 @@ Every triangle admits an empty ball of the given radius on its outward side, so 
 is a subset of the alpha shape of the points; the mesh is orientable and edge-manifold by
 construction. Points the ball cannot reach with the given radius, because they lie in a
 gap wider than the ball or under another layer of samples, are left out, and the mesh has a
-boundary there. The paper's remedy is to run again with a larger radius, which this
-implementation does not do; choose the radius for the sparsest region you care about.
+boundary there. The paper's remedy is a second pass with a larger radius, which is what the
+radius list does.
 
 ## How it compares
 
@@ -116,6 +119,9 @@ Each change is one commit, with its measurements in the message.
   candidates is read off the 2-D positions of the ball centre on its circle, without
   computing an angle: no `atan2` or `acos` per candidate. Same output, 17 to 30 % faster
   on the scans (BPA.jl's `pivot_contact`).
+- **Several radii** (section 4.6): after a pass, the boundary edges whose triangles admit an
+  empty ball of the next radius are put back on the front with that ball, and pivoting
+  resumes. The grid is rebuilt for each radius; the front and the mesh persist.
 - **Indices, files, options.** `reconstruct` returns index triples; the driver reads XYZ and
   NOFF and writes OFF or STL; `Options` adds `minComponent` and `seedNeighbors`; the tests
   check the meshes (closed sphere with Euler characteristic 2, outward-facing triangles,
