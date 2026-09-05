@@ -254,46 +254,74 @@ namespace bpa {
 			return PivotFrame{m, a, u, cross(a, u), r};
 		}
 
-		auto centerAt(const PivotFrame& fr, double t) -> dvec3 { return fr.m + fr.r * (std::cos(t) * fr.u + std::sin(t) * fr.v); }
+		// A position of the ball centre on the pivot circle, as coordinates (x, y) in the frame
+		// (u, v): the centre is m + x u + y v with x^2 + y^2 = r^2, and the pivot angle is the
+		// argument of (x, y) in [0, 2 pi). Contacts are compared by angle without evaluating it.
+		using Contact = dvec2;
 
-		// Smallest rotation angle in [0, 2 pi) at which the pivoting ball touches x, or nothing
-		// if it never does. With d = x - m and (d_u, d_v) = R (cos phi, sin phi) its components
-		// in the pivot plane, |centre(t) - x|^2 = radius^2 reduces to cos(t - phi) = K / R with
-		// K = (r^2 + |d|^2 - radius^2) / (2 r), so the two contacts are phi +- acos(K / R). A
-		// contact at (nearly) zero means x touches the initial ball: if the ball is moving into
-		// x the hit is immediate, otherwise that contact is ignored and the other one, where the
-		// ball comes back to x from the far side, is used. The opposite vertex of the edge is
-		// such a point.
-		auto pivotAngle(const PivotFrame& fr, dvec3 x, double radius) -> std::optional<double> {
+		auto centerAt(const PivotFrame& fr, Contact c) -> dvec3 { return fr.m + c.x * fr.u + c.y * fr.v; }
+
+		// The angle of c lies in [pi, 2 pi).
+		auto lowerHalf(Contact c) -> bool { return c.y < 0 || (c.y == 0 && c.x < 0); }
+
+		// The pivot angle of p is smaller than that of q: an angle in [0, pi) precedes any in
+		// [pi, 2 pi); within one half the two differ by less than pi, and the sign of the 2-D
+		// cross product decides.
+		auto angleLess(Contact p, Contact q) -> bool {
+			const auto hp = lowerHalf(p);
+			const auto hq = lowerHalf(q);
+			return hp == hq ? p.x * q.y - p.y * q.x > 0 : hq;
+		}
+
+		// The pivot angles of p and q differ by at most the angle whose sine is sinTol, r2 being
+		// the squared radius of the pivot circle: r^2 sin d = p x q and r^2 cos d = p . q. Two
+		// contacts on either side of angle 0 are not a tie: the ball reaches one at once and the
+		// other after a full turn.
+		auto angleTie(Contact p, Contact q, double r2, double sinTol) -> bool {
+			return p.x * q.x + p.y * q.y > 0 && std::abs(p.x * q.y - p.y * q.x) <= r2 * sinTol && (lowerHalf(p) == lowerHalf(q) || p.x < 0);
+		}
+
+		const auto touchSin = std::sin(touchTolerance);
+		const auto tieSin = std::sin(tieTolerance);
+
+		// The contact is within touchTolerance of angle 0.
+		auto touching(Contact c, double r) -> bool { return c.x > 0 && std::abs(c.y) < r * touchSin; }
+
+		// The ball centre at the first contact of the pivoting ball with x, or nothing if the
+		// ball never reaches x. With d = x - m and (d_u, d_v) its components in the pivot plane,
+		// |centre - x|^2 = radius^2 is the line d_u X + d_v Y = r K with K = (r^2 + |d|^2 -
+		// radius^2) / (2 r), whose intersections with the circle of radius r are F +- h (-d_v,
+		// d_u) / R: F = (r K / R^2)(d_u, d_v) is the foot of the perpendicular from the origin
+		// and h = r sqrt(1 - (K / R)^2) the half-chord. A contact at (nearly) zero means x
+		// touches the initial ball: if the ball is moving into x the hit is immediate, else that
+		// contact is ignored and the other one, where the ball comes back to x from the far
+		// side, is used. The opposite vertex of the edge is such a point.
+		auto pivotContact(const PivotFrame& fr, dvec3 x, double radius) -> std::optional<Contact> {
 			const auto d = x - fr.m;
 			const auto du = dot(d, fr.u);
 			const auto dv = dot(d, fr.v);
-			const auto R = std::hypot(du, dv);
+			const auto R = std::sqrt(du * du + dv * dv);
 			if (R <= 1e-12 * radius)
 				return {};
-			const auto ratio = (fr.r * fr.r + dot(d, d) - radius * radius) / (2 * fr.r) / R;
+			const auto r = fr.r;
+			auto ratio = (r * r + dot(d, d) - radius * radius) / (2 * r) / R;
 			if (std::abs(ratio) > 1 + 1e-9)
 				return {};
-			const auto phi = std::atan2(dv, du);
-			const auto alpha = std::acos(std::clamp(ratio, -1.0, 1.0));
-			constexpr auto twoPi = 2 * std::numbers::pi;
-			const auto mod2pi = [](double t) {
-				t = std::fmod(t, twoPi);
-				return t < 0 ? t + twoPi : t;
-			};
-			const auto ta = mod2pi(phi + alpha);
-			const auto tb = mod2pi(phi - alpha);
-			const auto touching = [](double t) { return t < touchTolerance || t > twoPi - touchTolerance; };
-			const auto touchA = touching(ta);
-			const auto touchB = touching(tb);
-			if (touchA || touchB) {
+			ratio = std::clamp(ratio, -1.0, 1.0);
+			const auto s = r * ratio / R;
+			const auto h = r * std::sqrt(1 - ratio * ratio) / R;
+			const Contact ca{s * du - h * dv, s * dv + h * du}; // phi + alpha
+			const Contact cb{s * du + h * dv, s * dv - h * du}; // phi - alpha
+			const auto ta = touching(ca, r);
+			const auto tb = touching(cb, r);
+			if (ta || tb) {
 				if (dv > 0) // the centre moves along v: into x
-					return 0.0;
-				if (touchA && touchB)
+					return Contact{r, 0};
+				if (ta && tb)
 					return {};
-				return touchA ? tb : ta;
+				return ta ? cb : ca;
 			}
-			return std::min(ta, tb);
+			return angleLess(cb, ca) ? cb : ca;
 		}
 
 		struct PivotResult {
@@ -320,47 +348,58 @@ namespace bpa {
 			if (!fr)
 				return {};
 			const auto neighborhood = grid.sphericalNeighborhood(fr->m, {e->a, e->b});
+			const auto r2 = fr->r * fr->r;
 
-			struct Hit {
-				MeshPoint* p;
-				double angle;
-			};
-			std::vector<Hit> hits;
-			hits.reserve(neighborhood.size());
-			auto best = std::numeric_limits<double>::infinity();
-			for (auto* p : neighborhood)
-				if (const auto t = pivotAngle(*fr, p->pos, radius)) {
-					hits.push_back({p, *t});
-					best = std::min(best, *t);
+			MeshPoint* best = nullptr;
+			Contact bestContact{};
+			auto nTies = 0;
+			for (auto* p : neighborhood) {
+				const auto c = pivotContact(*fr, p->pos, radius);
+				if (!c)
+					continue;
+				if (!best) {
+					best = p;
+					bestContact = *c;
+					nTies = 1;
+				} else if (angleTie(*c, bestContact, r2, tieSin)) {
+					nTies++;
+					if (angleLess(*c, bestContact))
+						bestContact = *c;
+				} else if (angleLess(*c, bestContact)) {
+					best = p;
+					bestContact = *c;
+					nTies = 1;
 				}
-			if (hits.empty())
+			}
+			if (!best)
 				return {};
-
-			const auto tied = [&](const Hit& h) { return h.angle <= best + tieTolerance; };
-			const auto nTies = std::count_if(begin(hits), end(hits), tied);
 			if (nTies == 1) {
-				const auto& h = *std::find_if(begin(hits), end(hits), tied);
-				if (h.p == e->opposite)
+				if (best == e->opposite)
 					return {}; // the ball came back to the opposite vertex first
-				return PivotResult{h.p, centerAt(*fr, h.angle)};
+				return PivotResult{best, centerAt(*fr, bestContact)};
 			}
 
 			// Simultaneous hits: pick deterministically. The opposite vertex is never chosen; a
 			// point hit at the same angle gives a valid triangle with it on the ball's surface.
-			const Hit* choice = nullptr;
+			MeshPoint* choice = nullptr;
+			Contact choiceContact{};
 			auto bestScore = -1;
-			for (const auto& h : hits) {
-				if (!tied(h) || h.p == e->opposite)
+			for (auto* p : neighborhood) {
+				if (p == e->opposite)
 					continue;
-				const auto score = tieScore(e, h.p);
-				if (score > bestScore || (score == bestScore && h.p->index < choice->p->index)) {
+				const auto c = pivotContact(*fr, p->pos, radius);
+				if (!c || !(angleTie(*c, bestContact, r2, tieSin) || angleLess(*c, bestContact)))
+					continue;
+				const auto score = tieScore(e, p);
+				if (score > bestScore || (score == bestScore && p->index < choice->index)) {
 					bestScore = score;
-					choice = &h;
+					choice = p;
+					choiceContact = *c;
 				}
 			}
 			if (!choice)
 				return {};
-			return PivotResult{choice->p, centerAt(*fr, choice->angle)};
+			return PivotResult{choice, centerAt(*fr, choiceContact)};
 		}
 
 		// Mark the edge inner; getActiveEdge() drops it from the front later.

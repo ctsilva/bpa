@@ -77,9 +77,9 @@ with an Apple M5, single-threaded, times for the reconstruction alone.
 
 | case | points | ρ | this code | BPA.jl | Open3D | IPOL (Digne) | MeshLab |
 |---|---|---|---|---|---|---|---|
-| bunny, 1 scan | 40 256 | 1.25 mm | 78 162 triangles, 0.12 s | 78 152, 0.12 s | 77 994, 0.35 s | 77 941, 0.51 s | 78 203, 0.28 s |
-| bunny, 10 scans | 362 272 | 1.25 mm | 323 920, 1.5 s | 323 934, 1.6 s | 317 975, 37 s | 323 808, 82 s | 477 737, 295 s |
-| dragon, 62 scans | 1 830 000 | 0.7 mm | 649 459, 5.3 s | 649 518, 6.6 s | 624 851, 831 s | 631 174, 1987 s | 2 545 632, 5.4 h |
+| bunny, 1 scan | 40 256 | 1.25 mm | 78 162 triangles, 0.09 s | 78 152, 0.12 s | 77 994, 0.35 s | 77 941, 0.51 s | 78 203, 0.28 s |
+| bunny, 10 scans | 362 272 | 1.25 mm | 323 920, 1.1 s | 323 934, 1.6 s | 317 975, 37 s | 323 808, 82 s | 477 737, 295 s |
+| dragon, 62 scans | 1 830 000 | 0.7 mm | 649 459, 4.4 s | 649 518, 6.6 s | 624 851, 831 s | 631 174, 1987 s | 2 545 632, 5.4 h |
 
 On the eight synthetic inputs (sphere, plane, four tori including an exact lattice, two knot
 radii) this code and BPA.jl produce identical triangle sets. On the scans no triangle of
@@ -112,6 +112,10 @@ Each change is one commit, with its measurements in the message.
 - **Double precision and a relative emptiness tolerance.** The original tested emptiness
   with an absolute margin of 1e-4 on the squared distance, which is 4 % of a ball of radius
   0.05 and larger than a ball of radius 0.01.
+- **Pivots without trigonometry.** The order in which the rolling ball reaches the
+  candidates is read off the 2-D positions of the ball centre on its circle, without
+  computing an angle: no `atan2` or `acos` per candidate. Same output, 20 to 30 % faster
+  on the scans (BPA.jl's `pivot_contact`).
 - **Indices, files, options.** `reconstruct` returns index triples; the driver reads XYZ and
   NOFF and writes OFF or STL; `Options` adds `minComponent` and `seedNeighbors`; the tests
   check the meshes (closed sphere with Euler characteristic 2, outward-facing triangles,
